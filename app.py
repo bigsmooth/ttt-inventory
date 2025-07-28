@@ -208,6 +208,46 @@ def fetch_my_supply_requests(hub_id):
     conn.close()
     return df
 
+# --- NOTIFICATIONS HELPERS ---
+def insert_notification(user_role, user_id, message):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO notifications (created, user_role, user_id, message) VALUES (?, ?, ?, ?)",
+        (datetime.now(), user_role, user_id, message),
+    )
+    conn.commit()
+    conn.close()
+
+def fetch_admin_id():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM users WHERE role='admin' AND active=1 LIMIT 1")
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def fetch_hub_manager_id(hub_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM users WHERE hub_id=? AND role IN ('manager', 'user') AND active=1 LIMIT 1",
+        (hub_id,),
+    )
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def fetch_notifications_for_user(user_role, user_id):
+    conn = get_connection()
+    df = pd.read_sql_query(
+        "SELECT created, message FROM notifications WHERE user_role = ? AND user_id = ? ORDER BY created DESC",
+        conn,
+        params=(user_role, user_id),
+    )
+    conn.close()
+    return df
+
 ### USER MANAGEMENT ###
 def fetch_all_users():
     conn = get_connection()
@@ -306,7 +346,7 @@ def render_user_management_panel():
 
 def render_hub_dashboard(hub_id, username):
     tabs = st.tabs([
-        "Inventory", "Inventory Out Trends", "Supply Notes", "Shipments", "Add Inventory Transaction"
+        "Inventory", "Inventory Out Trends", "Supply Notes", "Shipments", "Add Inventory Transaction", "Notifications"
     ])
     with tabs[0]:
         inventory_df = pd.DataFrame(fetch_inventory_for_hub(hub_id), columns=["Product", "SKU", "Barcode", "Inventory"])
@@ -364,10 +404,18 @@ def render_hub_dashboard(hub_id, username):
             log_inventory(st.session_state.user["id"], selected_sku, action, quantity, hub_id, comment)
             st.success(f"{action} of {quantity} for {selected_label} recorded.")
             st.rerun()
+    # --- NOTIFICATIONS TAB FOR HUB USERS ---
+    with tabs[5]:
+        st.subheader("🔔 Notifications")
+        notif_df = fetch_notifications_for_user('hub', st.session_state.user["id"])
+        if not notif_df.empty:
+            st.dataframe(notif_df)
+        else:
+            st.info("No notifications yet.")
 
 def render_admin_dashboard(username):
     admin_tabs = st.tabs([
-        "All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests", "All Shipments", "Assign/Remove SKUs", "User Management"
+        "All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests", "All Shipments", "Assign/Remove SKUs", "User Management", "Notifications"
     ])
     # Tab 1: All Inventory
     with admin_tabs[0]:
@@ -431,29 +479,170 @@ def render_admin_dashboard(username):
     # Tab 6: User Management
     with admin_tabs[5]:
         render_user_management_panel()
+    # --- NOTIFICATIONS TAB FOR ADMIN ---
+    with admin_tabs[6]:
+        st.subheader("🔔 Notifications")
+        admin_id = fetch_admin_id()
+        notif_df = fetch_notifications_for_user('admin', admin_id) if admin_id else pd.DataFrame()
+        if not notif_df.empty:
+            st.dataframe(notif_df)
+        else:
+            st.info("No notifications yet.")
 
 def render_supplier_dashboard(username):
     st.subheader("🚚 Supplier Dashboard")
+
+    # --- Multi-row input for products in this shipment ---
+    if "shipment_products" not in st.session_state:
+        st.session_state.shipment_products = [{
+            "product": "",
+            "sku": "",
+            "barcode": "",
+            "amount": 1,
+            "other_product": "",
+            "other_sku": "",
+        }]
+
+    # Load product list for dropdown
+    conn = get_connection()
+    products_df = pd.read_sql_query("SELECT name, sku, barcode FROM products ORDER BY name", conn)
+    hubs_df = pd.read_sql_query("SELECT id, name FROM hubs", conn)
+    conn.close()
+    product_choices = list(products_df["name"]) + ["Other"]
+    hub_map = dict(zip(hubs_df['name'], hubs_df['id']))
+
+    # --- Main Form ---
     with st.form("shipment_form"):
         tracking = st.text_input("Tracking Number")
         carrier = st.selectbox("Carrier", ["USPS", "UPS", "FedEx", "DHL"])
-        conn = get_connection()
-        hubs_df = pd.read_sql_query("SELECT id, name FROM hubs", conn)
-        conn.close()
-        hub_map = dict(zip(hubs_df['name'], hubs_df['id']))
         selected_hub = st.selectbox("Select Hub to Ship To", list(hub_map.keys()))
-        product = st.text_input("Product Name (must match SKU product name)")
-        amount = st.number_input("Amount", min_value=1, step=1)
-        submit_shipment = st.form_submit_button("Add Shipment")
-        if submit_shipment:
-            insert_shipment(username, tracking, hub_map[selected_hub], product, amount, carrier)
-            st.success("Shipment logged and sent to HQ and hub.")
-            st.rerun()
-    # Show all shipments logged by this supplier
+        shipment_products = st.session_state.shipment_products
+
+        # Dynamic product rows
+        st.markdown("#### Products in Shipment")
+        to_remove = []
+        for i, prod in enumerate(shipment_products):
+            cols = st.columns([3,2,2,2,2])
+            with cols[0]:
+                product_name = st.selectbox(
+                    f"Product {i+1}", product_choices, 
+                    index=(product_choices.index(prod["product"]) if prod["product"] in product_choices else 0), key=f"product_{i}"
+                )
+                prod["product"] = product_name
+            with cols[1]:
+                if product_name == "Other":
+                    prod["other_product"] = st.text_input(f"Other Product Name {i+1}", value=prod["other_product"], key=f"otherprod_{i}")
+                else:
+                    prod["other_product"] = ""
+            with cols[2]:
+                if product_name == "Other":
+                    prod["other_sku"] = st.text_input(f"Other SKU {i+1}", value=prod["other_sku"], key=f"othersku_{i}")
+                    prod["sku"] = prod["other_sku"]
+                else:
+                    this_row = products_df[products_df["name"] == product_name]
+                    prod["sku"] = this_row["sku"].iloc[0] if not this_row.empty else ""
+            with cols[3]:
+                if product_name != "Other":
+                    prod["barcode"] = this_row["barcode"].iloc[0] if not this_row.empty else ""
+                    st.text(f"{prod['barcode']}")
+                else:
+                    prod["barcode"] = ""
+                    st.text("-")
+            with cols[4]:
+                prod["amount"] = st.number_input(f"Qty {i+1}", min_value=1, step=1, value=prod["amount"], key=f"qty_{i}")
+                if i > 0:
+                    if st.button(f"Remove", key=f"remove_{i}"):
+                        to_remove.append(i)
+        
+        # Remove any rows requested
+        if to_remove:
+            for idx in sorted(to_remove, reverse=True):
+                shipment_products.pop(idx)
+            st.session_state.shipment_products = shipment_products
+            st.experimental_rerun()
+
+        if st.button("Add Another Product"):
+            shipment_products.append({
+                "product": "",
+                "sku": "",
+                "barcode": "",
+                "amount": 1,
+                "other_product": "",
+                "other_sku": "",
+            })
+            st.session_state.shipment_products = shipment_products
+            st.experimental_rerun()
+
+        # CSV Upload
+        st.markdown("#### Bulk Add Products (CSV Upload)")
+        csv_file = st.file_uploader("CSV file (columns: product, sku, barcode, amount)", type=["csv"])
+        if csv_file:
+            csv_df = pd.read_csv(csv_file)
+            for _, row in csv_df.iterrows():
+                shipment_products.append({
+                    "product": row.get("product", ""),
+                    "sku": row.get("sku", ""),
+                    "barcode": row.get("barcode", ""),
+                    "amount": int(row.get("amount", 1)),
+                    "other_product": "" if row.get("product", "") in product_choices else row.get("product", ""),
+                    "other_sku": "" if row.get("sku", "") else "",
+                })
+            st.session_state.shipment_products = shipment_products
+            st.success("CSV products added to this shipment! Review below before submitting.")
+            st.experimental_rerun()
+
+        # Submit Shipment
+        submitted = st.form_submit_button("Add Shipment")
+        if submitted:
+            errors = []
+            for prod in shipment_products:
+                name = prod["product"] if prod["product"] != "Other" else prod["other_product"]
+                sku = prod["sku"] or prod["other_sku"]
+                amt = prod["amount"]
+                if not name or not sku or amt <= 0:
+                    errors.append(f"Product row missing required fields.")
+            if not tracking:
+                errors.append("Tracking number required.")
+            if errors:
+                st.error("\n".join(errors))
+            else:
+                hub_id = hub_map[selected_hub]
+                for prod in shipment_products:
+                    name = prod["product"] if prod["product"] != "Other" else prod["other_product"]
+                    sku = prod["sku"] or prod["other_sku"]
+                    amt = prod["amount"]
+                    insert_shipment(username, tracking, hub_id, name, amt, carrier)
+                # --- NOTIFY HQ ADMIN & HUB MANAGER/USER ---
+                admin_id = fetch_admin_id()
+                msg = f"New shipment from {username} (Tracking: {tracking}) for hub '{selected_hub}'."
+                if admin_id:
+                    insert_notification('admin', admin_id, msg)
+                hub_manager_id = fetch_hub_manager_id(hub_id)
+                if hub_manager_id:
+                    insert_notification('hub', hub_manager_id, f"Shipment from {username} is on the way. Tracking: {tracking}")
+                st.success("Shipment logged and notifications sent to HQ and hub!")
+                st.session_state.shipment_products = [{
+                    "product": "",
+                    "sku": "",
+                    "barcode": "",
+                    "amount": 1,
+                    "other_product": "",
+                    "other_sku": "",
+                }]
+                st.experimental_rerun()
+
+    # Historical Shipments (with export)
+    st.subheader("My Shipments")
     ships = fetch_all_shipments()
     ships = ships[ships['supplier'] == username] if not ships.empty else pd.DataFrame()
-    st.subheader("My Shipments")
-    st.dataframe(ships if not ships.empty else pd.DataFrame(columns=["date", "tracking", "hub_id", "product", "amount", "carrier"]))
+    if not ships.empty:
+        st.dataframe(ships)
+        st.download_button("Download My Shipments (CSV)", ships.to_csv(index=False), file_name="my_shipments.csv", mime="text/csv")
+    else:
+        st.info("No shipments found.")
+
+    st.markdown("---")
+    st.info("Need to ship to multiple hubs at once? Use the above form, then repeat for each hub.")
 
 # --- LOGIN FLOW ---
 if 'user' not in st.session_state:
