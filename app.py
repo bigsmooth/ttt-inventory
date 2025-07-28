@@ -5,11 +5,12 @@ from datetime import datetime
 import altair as alt
 
 DB_FILE = "barcodes.db"
+LOGO_URL = "https://i.imgur.com/Y7SgqZR.jpeg"
 
-st.set_page_config(page_title="TTT Inventory System", page_icon="🧦", layout="wide")
-st.image("https://i.imgur.com/Y7SgqZR.jpeg", width=150)
+st.set_page_config(page_title="Thick Thigh Tribe Inventory", page_icon="🧦", layout="wide")
+st.image(LOGO_URL, width=150)
 
-# --- DATABASE HELPERS ---
+# --- DB HELPERS ---
 def get_connection():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
@@ -125,18 +126,17 @@ def insert_supply_request(hub_id, username, notes):
     conn.commit()
     conn.close()
 
-# -- FIXED ORDERS PROCESSED TODAY FUNCTION
 def fetch_today_orders(hub_id):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT SUM(quantity)
         FROM inventory_log
-        WHERE hub = ? AND action = 'OUT' AND DATE(timestamp) = DATE('now', 'localtime')
+        WHERE hub = ? AND action = 'OUT' AND date(timestamp) = date('now', 'localtime')
     """, (hub_id,))
-    result = cursor.fetchone()
+    result = cursor.fetchone()[0]
     conn.close()
-    return result[0] if result and result[0] is not None else 0
+    return result or 0
 
 def fetch_all_inventory():
     conn = get_connection()
@@ -173,60 +173,88 @@ def remove_sku_from_hub(sku, hub_id):
     conn.commit()
     conn.close()
 
-# --- DASHBOARD HELPERS ---
+# --- DASHBOARDS ---
 def render_hub_dashboard(hub_id):
-    st.subheader("📊 Hub Dashboard")
+    tab1, tab2, tab3 = st.tabs(["Inventory", "Orders & History", "Send Notes to HQ"])
 
-    st.markdown("### ➕ Add Inventory Transactions")
-    sku_data = fetch_skus_for_hub(hub_id)
-    sku_options = {f"{name} ({sku})": sku for name, sku, _ in sku_data}
-    selected_label = st.selectbox("Select SKU", list(sku_options.keys()))
-    selected_sku = sku_options[selected_label]
-    action = st.radio("Action", ["IN", "OUT"], horizontal=True)
-    quantity = st.number_input("Quantity", min_value=1, step=1)
-    comment = st.text_input("Optional Comment")
+    # --- INVENTORY TAB ---
+    with tab1:
+        st.markdown("### ➕ Add Inventory Transactions")
+        sku_data = fetch_skus_for_hub(hub_id)
+        sku_options = {f"{name} ({sku})": sku for name, sku, _ in sku_data}
+        selected_label = st.selectbox("Select SKU", list(sku_options.keys()))
+        selected_sku = sku_options[selected_label]
+        action = st.radio("Action", ["IN", "OUT"], horizontal=True)
+        quantity = st.number_input("Quantity", min_value=1, step=1)
+        comment = st.text_input("Optional Comment")
+        if st.button("Submit Inventory Update"):
+            log_inventory(st.session_state.user["id"], selected_sku, action, quantity, hub_id, comment)
+            st.success(f"{action} of {quantity} for {selected_label} recorded.")
+            st.rerun()
 
-    if st.button("Submit Inventory Update"):
-        log_inventory(st.session_state.user["id"], selected_sku, action, quantity, hub_id, comment)
-        st.success(f"{action} of {quantity} for {selected_label} recorded.")
-        st.rerun()
+        inventory_df = pd.DataFrame(fetch_inventory_for_hub(hub_id), columns=["Product", "SKU", "Barcode", "Inventory"])
+        st.dataframe(inventory_df)
+        low_stock = inventory_df[inventory_df["Inventory"] < 10]
+        if not low_stock.empty:
+            st.warning("⚠️ The following items are below 10 in stock. Contact HQ for restock:")
+            st.dataframe(low_stock)
 
-    inventory_df = pd.DataFrame(fetch_inventory_for_hub(hub_id), columns=["Product", "SKU", "Barcode", "Inventory"])
-    st.dataframe(inventory_df)
+    # --- ORDERS & HISTORY TAB ---
+    with tab2:
+        history_df = fetch_full_inventory_log(hub_id)
+        st.dataframe(history_df)
+        out_df = history_df[history_df['action'] == 'OUT']
+        if not out_df.empty:
+            out_df['date'] = pd.to_datetime(out_df['timestamp']).dt.date
+            orders_today = out_df[out_df['date'] == datetime.now().date()]['quantity'].sum()
+            st.success(f"✅ Orders Processed Today: {orders_today}")
+        chart_df = fetch_inventory_history(hub_id)
+        if not chart_df.empty:
+            chart = alt.Chart(chart_df).mark_line().encode(
+                x='date:T',
+                y='total_out:Q',
+                color='sku:N'
+            ).properties(title="Inventory OUT Trends")
+            st.altair_chart(chart, use_container_width=True)
 
-    low_stock = inventory_df[inventory_df["Inventory"] < 10]
-    if not low_stock.empty:
-        st.warning("⚠️ The following items are below 10 in stock. Contact HQ for restock:")
-        st.dataframe(low_stock)
-
-    history_df = fetch_inventory_history(hub_id)
-    if not history_df.empty:
-        chart = alt.Chart(history_df).mark_line().encode(
-            x='date:T',
-            y='total_out:Q',
-            color='sku:N'
-        ).properties(title="Inventory OUT Trends")
-        st.altair_chart(chart, use_container_width=True)
-
-    today_orders = fetch_today_orders(hub_id)
-    st.success(f"✅ Orders Processed Today: {today_orders}")
+    # --- SUPPLY NOTES TAB ---
+    with tab3:
+        st.subheader("Send Notes or Supply Requests to HQ")
+        note = st.text_area("Type your message or request here")
+        if st.button("Send to HQ"):
+            insert_supply_request(hub_id, st.session_state.user['username'], note)
+            st.success("Sent to HQ!")
+        st.write("Your previous messages:")
+        notes_df = fetch_all_supply_requests()
+        hub_notes = notes_df[notes_df['hub_id'] == hub_id]
+        if not hub_notes.empty:
+            st.dataframe(hub_notes[["timestamp", "notes"]])
 
 def render_admin_dashboard():
-    st.subheader("📊 HQ Admin Dashboard")
-    st.dataframe(fetch_all_inventory())
-    st.subheader("📬 Supply Requests")
-    st.dataframe(fetch_all_supply_requests())
+    tab1, tab2, tab3 = st.tabs(["All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests"])
+    # --- ALL INVENTORY TAB ---
+    with tab1:
+        st.subheader("All Inventory Across Hubs")
+        st.dataframe(fetch_all_inventory())
+    # --- ALL ORDERS TAB ---
+    with tab2:
+        all_log = pd.read_sql_query("SELECT * FROM inventory_log ORDER BY timestamp DESC", get_connection())
+        st.dataframe(all_log)
+    # --- ALL NOTES TAB ---
+    with tab3:
+        st.subheader("All Hub Messages/Supply Requests")
+        all_notes = fetch_all_supply_requests()
+        st.dataframe(all_notes)
 
+    # --- HQ Admin SKU ASSIGNMENT TOOL ---
     st.subheader("🧩 Assign or Remove SKUs to/from Hubs")
     all_hubs = pd.read_sql_query("SELECT id, name FROM hubs", get_connection())
     all_products = pd.read_sql_query("SELECT sku, name FROM products ORDER BY name", get_connection())
     hub_map = dict(zip(all_hubs['name'], all_hubs['id']))
     product_map = dict(zip(all_products['name'], all_products['sku']))
-
     selected_hub = st.selectbox("Select Hub", list(hub_map.keys()))
     selected_product = st.selectbox("Select Product", list(product_map.keys()))
     selected_sku = product_map[selected_product]
-
     col1, col2 = st.columns(2)
     with col1:
         if st.button("✅ Assign SKU"):
@@ -236,7 +264,6 @@ def render_admin_dashboard():
         if st.button("❌ Remove SKU"):
             remove_sku_from_hub(selected_sku, hub_map[selected_hub])
             st.warning(f"{selected_product} removed from {selected_hub}")
-
     if selected_hub:
         st.markdown(f"### Current SKUs at {selected_hub}")
         hub_id = hub_map[selected_hub]
@@ -248,12 +275,11 @@ if 'user' not in st.session_state:
     st.session_state.user = None
 
 if st.session_state.user is None:
-    st.title("🧦 TTT Inventory Login")
+    st.title("🧦 Thick Thigh Tribe Inventory Login")
     with st.form("login_form"):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login")
-
         if submitted:
             result = login(username, password)
             if result:
@@ -271,7 +297,6 @@ else:
     if st.sidebar.button("Logout"):
         st.session_state.clear()
         st.rerun()
-
     user = st.session_state.user
     if user["role"] == "admin":
         render_admin_dashboard()
