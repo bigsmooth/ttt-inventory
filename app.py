@@ -35,9 +35,18 @@ def create_tables():
     c.execute("""CREATE TABLE IF NOT EXISTS notifications (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created DATETIME, user_role TEXT, user_id INTEGER, message TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS shipments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date DATETIME,
+        hub_id INTEGER,
+        tracking TEXT,
+        carrier TEXT,
+        notes TEXT
+    )""")
     conn.commit()
     conn.close()
 create_tables()
+
 
 try:
     st.image("https://i.imgur.com/Y7SgqZR.jpeg", width=150)
