@@ -30,6 +30,12 @@ def fetch_hub_name(hub_id):
     conn.close()
     return result[0] if result else "Unknown"
 
+def fetch_all_hubs():
+    conn = get_connection()
+    hubs = pd.read_sql_query("SELECT id, name FROM hubs", conn)
+    conn.close()
+    return hubs
+
 def log_inventory(user_id, sku, action, quantity, hub_id, comment):
     conn = get_connection()
     cursor = conn.cursor()
@@ -202,7 +208,102 @@ def fetch_my_supply_requests(hub_id):
     conn.close()
     return df
 
+### USER MANAGEMENT ###
+def fetch_all_users():
+    conn = get_connection()
+    users = pd.read_sql_query(
+        "SELECT id, username, email, role, hub_id, active FROM users ORDER BY id", conn
+    )
+    conn.close()
+    return users
+
+def add_user(username, password, email, role, hub_id, active=1):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO users (username, password, email, role, hub_id, active)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (username, password, email, role, hub_id, active))
+    conn.commit()
+    conn.close()
+
+def update_user(user_id, username, email, role, hub_id, active):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE users SET username=?, email=?, role=?, hub_id=?, active=?
+        WHERE id=?
+    """, (username, email, role, hub_id, active, user_id))
+    conn.commit()
+    conn.close()
+
+def deactivate_user(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def activate_user(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET active=1 WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
 # --- TABS ---
+def render_user_management_panel():
+    st.subheader("👤 User Management")
+    users = fetch_all_users()
+    hubs = fetch_all_hubs()
+    hub_choices = dict(zip(hubs['name'], hubs['id']))
+
+    st.markdown("#### Add New User")
+    with st.form("add_user_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            username = st.text_input("Username")
+            password = st.text_input("Password")
+        with col2:
+            email = st.text_input("Email")
+            role = st.selectbox("Role", ["user", "manager", "admin", "supplier"])
+        with col3:
+            hub_name = st.selectbox("Assign to Hub", ["None"] + list(hub_choices.keys()))
+            active = st.checkbox("Active", value=True)
+        submitted = st.form_submit_button("Add User")
+        if submitted:
+            hub_id = hub_choices.get(hub_name) if hub_name != "None" else None
+            add_user(username, password, email, role, hub_id, int(active))
+            st.success("User added!")
+            st.rerun()
+
+    st.markdown("#### All Users")
+    for idx, row in users.iterrows():
+        with st.expander(f"{row['username']} (Role: {row['role']}, Active: {row['active']})"):
+            col1, col2 = st.columns([3,1])
+            with col1:
+                new_username = st.text_input(f"Username_{row['id']}", value=row['username'], key=f"username_{row['id']}")
+                new_email = st.text_input(f"Email_{row['id']}", value=row['email'] or "", key=f"email_{row['id']}")
+                new_role = st.selectbox(f"Role_{row['id']}", ["user", "manager", "admin", "supplier"], index=["user", "manager", "admin", "supplier"].index(row['role']), key=f"role_{row['id']}")
+                new_hub = st.selectbox(f"Hub_{row['id']}", ["None"] + list(hub_choices.keys()), index=(list(hub_choices.values()).index(row['hub_id'])+1 if row['hub_id'] in hub_choices.values() else 0), key=f"hub_{row['id']}")
+                new_active = st.checkbox(f"Active_{row['id']}", value=bool(row['active']), key=f"active_{row['id']}")
+            with col2:
+                if st.button("Update", key=f"update_{row['id']}"):
+                    hub_id = hub_choices.get(new_hub) if new_hub != "None" else None
+                    update_user(row['id'], new_username, new_email, new_role, hub_id, int(new_active))
+                    st.success("User updated.")
+                    st.rerun()
+                if row['active']:
+                    if st.button("Deactivate", key=f"deactivate_{row['id']}"):
+                        deactivate_user(row['id'])
+                        st.warning("User deactivated.")
+                        st.rerun()
+                else:
+                    if st.button("Activate", key=f"activate_{row['id']}"):
+                        activate_user(row['id'])
+                        st.success("User activated.")
+                        st.rerun()
+
 def render_hub_dashboard(hub_id, username):
     tabs = st.tabs([
         "Inventory", "Inventory Out Trends", "Supply Notes", "Shipments", "Add Inventory Transaction"
@@ -266,7 +367,7 @@ def render_hub_dashboard(hub_id, username):
 
 def render_admin_dashboard(username):
     admin_tabs = st.tabs([
-        "All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests", "All Shipments", "Assign/Remove SKUs"
+        "All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests", "All Shipments", "Assign/Remove SKUs", "User Management"
     ])
     # Tab 1: All Inventory
     with admin_tabs[0]:
@@ -327,6 +428,9 @@ def render_admin_dashboard(username):
             hub_id = hub_map[selected_hub]
             current = fetch_skus_for_hub(hub_id)
             st.dataframe(pd.DataFrame(current, columns=["Product", "SKU", "Barcode"]))
+    # Tab 6: User Management
+    with admin_tabs[5]:
+        render_user_management_panel()
 
 def render_supplier_dashboard(username):
     st.subheader("🚚 Supplier Dashboard")
