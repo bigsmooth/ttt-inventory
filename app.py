@@ -238,7 +238,9 @@ def fetch_hub_manager_id(hub_id):
     conn.close()
     return result[0] if result else None
 
-def fetch_notifications_for_user(user_role, user_id):
+ef fetch_notifications_for_user(user_role, user_id):
+    if user_id is None:
+        return pd.DataFrame(columns=["created", "message"])
     conn = get_connection()
     df = pd.read_sql_query(
         "SELECT created, message FROM notifications WHERE user_role = ? AND user_id = ? ORDER BY created DESC",
