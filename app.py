@@ -238,7 +238,7 @@ def fetch_hub_manager_id(hub_id):
     conn.close()
     return result[0] if result else None
 
-ef fetch_notifications_for_user(user_role, user_id):
+def fetch_notifications_for_user(user_role, user_id):
     if user_id is None:
         return pd.DataFrame(columns=["created", "message"])
     conn = get_connection()
