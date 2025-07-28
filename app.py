@@ -231,44 +231,62 @@ def render_hub_dashboard(hub_id):
             st.dataframe(hub_notes[["timestamp", "notes"]])
 
 def render_admin_dashboard():
-    tab1, tab2, tab3 = st.tabs(["All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests"])
-    # --- ALL INVENTORY TAB ---
-    with tab1:
+    st.title("🧦 TTT Inventory HQ Admin Dashboard")
+
+    tabs = st.tabs([
+        "All Inventory",
+        "All Orders/OUT+IN",
+        "All Supply Notes/Requests",
+        "🧩 Assign/Remove SKUs"
+    ])
+    
+    # Tab 1: All Inventory
+    with tabs[0]:
         st.subheader("All Inventory Across Hubs")
         st.dataframe(fetch_all_inventory())
-    # --- ALL ORDERS TAB ---
-    with tab2:
-        all_log = pd.read_sql_query("SELECT * FROM inventory_log ORDER BY timestamp DESC", get_connection())
-        st.dataframe(all_log)
-    # --- ALL NOTES TAB ---
-    with tab3:
-        st.subheader("All Hub Messages/Supply Requests")
-        all_notes = fetch_all_supply_requests()
-        st.dataframe(all_notes)
 
-    # --- HQ Admin SKU ASSIGNMENT TOOL ---
-    st.subheader("🧩 Assign or Remove SKUs to/from Hubs")
-    all_hubs = pd.read_sql_query("SELECT id, name FROM hubs", get_connection())
-    all_products = pd.read_sql_query("SELECT sku, name FROM products ORDER BY name", get_connection())
-    hub_map = dict(zip(all_hubs['name'], all_hubs['id']))
-    product_map = dict(zip(all_products['name'], all_products['sku']))
-    selected_hub = st.selectbox("Select Hub", list(hub_map.keys()))
-    selected_product = st.selectbox("Select Product", list(product_map.keys()))
-    selected_sku = product_map[selected_product]
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("✅ Assign SKU"):
-            assign_sku_to_hub(selected_sku, hub_map[selected_hub])
-            st.success(f"{selected_product} assigned to {selected_hub}")
-    with col2:
-        if st.button("❌ Remove SKU"):
-            remove_sku_from_hub(selected_sku, hub_map[selected_hub])
-            st.warning(f"{selected_product} removed from {selected_hub}")
-    if selected_hub:
-        st.markdown(f"### Current SKUs at {selected_hub}")
-        hub_id = hub_map[selected_hub]
-        current = fetch_skus_for_hub(hub_id)
-        st.dataframe(pd.DataFrame(current, columns=["Product", "SKU", "Barcode"]))
+    # Tab 2: All Inventory Actions (Log)
+    with tabs[1]:
+        st.subheader("All Orders/OUT+IN")
+        all_log = pd.read_sql_query(
+            "SELECT * FROM inventory_log ORDER BY timestamp DESC",
+            get_connection()
+        )
+        st.dataframe(all_log)
+    
+    # Tab 3: All Hub Supply Notes/Requests
+    with tabs[2]:
+        st.subheader("All Hub Messages/Supply Requests")
+        st.dataframe(fetch_all_supply_requests())
+    
+    # Tab 4: Assign or Remove SKUs
+    with tabs[3]:
+        st.subheader("🧩 Assign or Remove SKUs to/from Hubs")
+        all_hubs = pd.read_sql_query("SELECT id, name FROM hubs", get_connection())
+        all_products = pd.read_sql_query("SELECT sku, name FROM products ORDER BY name", get_connection())
+        hub_map = dict(zip(all_hubs['name'], all_hubs['id']))
+        product_map = dict(zip(all_products['name'], all_products['sku']))
+
+        selected_hub = st.selectbox("Select Hub", list(hub_map.keys()))
+        selected_product = st.selectbox("Select Product", list(product_map.keys()))
+        selected_sku = product_map[selected_product]
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Assign SKU"):
+                assign_sku_to_hub(selected_sku, hub_map[selected_hub])
+                st.success(f"{selected_product} assigned to {selected_hub}")
+        with col2:
+            if st.button("❌ Remove SKU"):
+                remove_sku_from_hub(selected_sku, hub_map[selected_hub])
+                st.warning(f"{selected_product} removed from {selected_hub}")
+
+        if selected_hub:
+            st.markdown(f"### Current SKUs at {selected_hub}")
+            hub_id = hub_map[selected_hub]
+            current = fetch_skus_for_hub(hub_id)
+            st.dataframe(pd.DataFrame(current, columns=["Product", "SKU", "Barcode"]))
+
 
 # --- LOGIN FLOW ---
 if 'user' not in st.session_state:
