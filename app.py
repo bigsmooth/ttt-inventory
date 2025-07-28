@@ -7,211 +7,148 @@ import altair as alt
 DB_FILE = "barcodes.db"
 st.set_page_config(page_title="TTT Inventory System", page_icon="🧦", layout="wide")
 
-# -------- AUTO-CREATE TABLES IF NOT EXIST --------
+# --- AUTO CREATE TABLES ---
 def create_tables():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # users table
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT,
-        password TEXT,
-        email TEXT,
-        role TEXT,
-        hub_id INTEGER,
-        active INTEGER DEFAULT 1
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, password TEXT, email TEXT, role TEXT, hub_id INTEGER, active INTEGER DEFAULT 1
     )""")
-    # hubs
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS hubs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT
+    c.execute("""CREATE TABLE IF NOT EXISTS hubs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT
     )""")
-    # products
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS products (
-        sku TEXT PRIMARY KEY,
-        name TEXT,
-        barcode TEXT
+    c.execute("""CREATE TABLE IF NOT EXISTS products (
+        sku TEXT PRIMARY KEY, name TEXT, barcode TEXT
     )""")
-    # inventory_log
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS inventory_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp DATETIME,
-        sku TEXT,
-        action TEXT,
-        quantity INTEGER,
-        hub INTEGER,
-        user_id INTEGER,
-        comment TEXT
+    c.execute("""CREATE TABLE IF NOT EXISTS inventory_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME, sku TEXT, action TEXT, quantity INTEGER, hub INTEGER, user_id INTEGER, comment TEXT
     )""")
-    # hub_skus
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS hub_skus (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sku TEXT,
-        hub_id INTEGER,
-        UNIQUE (sku, hub_id)
+    c.execute("""CREATE TABLE IF NOT EXISTS hub_skus (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, sku TEXT, hub_id INTEGER, UNIQUE (sku, hub_id)
     )""")
-    # supply_requests
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS supply_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        hub_id INTEGER,
-        username TEXT,
-        notes TEXT,
-        timestamp DATETIME,
-        response TEXT,
-        admin TEXT
+    c.execute("""CREATE TABLE IF NOT EXISTS supply_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, hub_id INTEGER, username TEXT, notes TEXT, timestamp DATETIME, response TEXT, admin TEXT
     )""")
-    # shipments
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS shipments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date DATETIME,
-        supplier TEXT,
-        tracking TEXT,
-        hub_id INTEGER,
-        product TEXT,
-        amount INTEGER,
-        carrier TEXT
+    c.execute("""CREATE TABLE IF NOT EXISTS shipments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, date DATETIME, supplier TEXT, tracking TEXT, hub_id INTEGER, product TEXT, amount INTEGER, carrier TEXT
     )""")
-    # notifications
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created DATETIME,
-        user_role TEXT,
-        user_id INTEGER,
-        message TEXT
+    c.execute("""CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created DATETIME, user_role TEXT, user_id INTEGER, message TEXT
     )""")
     conn.commit()
     conn.close()
 
 create_tables()
 
-# You may want a fallback logo, or comment this out if broken:
 try:
     st.image("https://i.imgur.com/Y7SgqZR.jpeg", width=150)
 except Exception:
     st.info("Logo image not found.")
 
-# --- DATABASE HELPERS ---
+# ---- DB HELPERS ----
 def get_connection():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
 def login(username, password):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, role, hub_id FROM users WHERE username=? AND password=? AND active=1", (username, password))
-    result = cursor.fetchone()
+    c = conn.cursor()
+    c.execute("SELECT id, role, hub_id FROM users WHERE username=? AND password=? AND active=1", (username, password))
+    result = c.fetchone()
     conn.close()
     return result
 
-def fetch_hub_name(hub_id):
-    if hub_id is None:
-        return "HQ Admin"
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM hubs WHERE id = ?", (hub_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else "Unknown"
-
 def fetch_all_hubs():
     conn = get_connection()
-    hubs = pd.read_sql_query("SELECT id, name FROM hubs", conn)
+    df = pd.read_sql_query("SELECT id, name FROM hubs", conn)
     conn.close()
-    return hubs
+    return df
 
 def log_inventory(user_id, sku, action, quantity, hub_id, comment):
     conn = get_connection()
-    cursor = conn.cursor()
+    c = conn.cursor()
     timestamp = datetime.now()
-    cursor.execute("""
+    c.execute("""
         INSERT INTO inventory_log (timestamp, sku, action, quantity, hub, user_id, comment)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (timestamp, sku, action, quantity, hub_id, user_id, comment))
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (timestamp, sku, action, quantity, hub_id, user_id, comment))
     conn.commit()
     conn.close()
 
 def fetch_skus_for_hub(hub_id):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT p.name, p.sku, p.barcode
-        FROM hub_skus hs
+    c = conn.cursor()
+    c.execute("""
+        SELECT p.name, p.sku, p.barcode FROM hub_skus hs
         JOIN products p ON hs.sku = p.sku
         WHERE hs.hub_id = ?
-        ORDER BY p.name
-    """, (hub_id,))
-    rows = cursor.fetchall()
+        ORDER BY p.name""", (hub_id,))
+    rows = c.fetchall()
     conn.close()
     return rows
 
 def fetch_inventory_for_hub(hub_id):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    c = conn.cursor()
+    c.execute("""
         SELECT p.name, p.sku, p.barcode,
-        COALESCE(SUM(CASE WHEN il.action = 'IN' THEN il.quantity ELSE 0 END), 0) -
-        COALESCE(SUM(CASE WHEN il.action = 'OUT' THEN il.quantity ELSE 0 END), 0) AS net_quantity
+        COALESCE(SUM(CASE WHEN il.action='IN' THEN il.quantity ELSE 0 END),0) -
+        COALESCE(SUM(CASE WHEN il.action='OUT' THEN il.quantity ELSE 0 END),0) AS net_quantity
         FROM hub_skus hs
         JOIN products p ON hs.sku = p.sku
         LEFT JOIN inventory_log il ON hs.sku = il.sku AND il.hub = ?
         WHERE hs.hub_id = ?
         GROUP BY p.name, p.sku, p.barcode
-        ORDER BY p.name
-    """, (hub_id, hub_id))
-    results = cursor.fetchall()
+        ORDER BY p.name""", (hub_id, hub_id))
+    data = c.fetchall()
     conn.close()
-    return results
+    return data
 
 def fetch_inventory_history(hub_id):
     conn = get_connection()
-    query = """
+    df = pd.read_sql_query("""
         SELECT sku, date(timestamp) as date, SUM(CASE WHEN action = 'OUT' THEN quantity ELSE 0 END) as total_out
-        FROM inventory_log
-        WHERE hub = ?
-        GROUP BY sku, date
-        ORDER BY date
-    """
-    df = pd.read_sql_query(query, conn, params=(hub_id,))
+        FROM inventory_log WHERE hub = ?
+        GROUP BY sku, date ORDER BY date
+    """, conn, params=(hub_id,))
     conn.close()
     return df
 
-def fetch_full_inventory_log(hub_id):
+def fetch_my_supply_requests(hub_id):
     conn = get_connection()
     df = pd.read_sql_query("""
-        SELECT timestamp, sku, action, quantity, user_id, comment
-        FROM inventory_log
-        WHERE hub = ?
-        ORDER BY timestamp DESC
+        SELECT * FROM supply_requests WHERE hub_id = ? ORDER BY timestamp DESC
     """, conn, params=(hub_id,))
     conn.close()
     return df
 
 def insert_supply_request(hub_id, username, notes):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    c = conn.cursor()
+    c.execute("""
         INSERT INTO supply_requests (hub_id, username, notes, timestamp)
         VALUES (?, ?, ?, ?)
     """, (hub_id, username, notes, datetime.now()))
     conn.commit()
     conn.close()
 
+def reply_to_supply_request(request_id, reply_text, admin_username):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        UPDATE supply_requests SET response=?, admin=? WHERE id=?
+    """, (reply_text, admin_username, request_id))
+    conn.commit()
+    conn.close()
+
 def fetch_today_orders(hub_id):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    c = conn.cursor()
+    c.execute("""
         SELECT SUM(quantity)
         FROM inventory_log
         WHERE hub = ? AND action = 'OUT' AND date(timestamp) = date('now')
     """, (hub_id,))
-    result = cursor.fetchone()[0]
+    result = c.fetchone()[0]
     conn.close()
     return result or 0
 
@@ -236,99 +173,23 @@ def fetch_all_supply_requests():
     conn.close()
     return df
 
-def assign_sku_to_hub(sku, hub_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO hub_skus (sku, hub_id) VALUES (?, ?)", (sku, hub_id))
-    conn.commit()
-    conn.close()
-
-def remove_sku_from_hub(sku, hub_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM hub_skus WHERE sku = ? AND hub_id = ?", (sku, hub_id))
-    conn.commit()
-    conn.close()
-
-def insert_shipment(supplier, tracking, hub_id, product, amount, carrier):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO shipments (date, supplier, tracking, hub_id, product, amount, carrier)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (datetime.now(), supplier, tracking, hub_id, product, amount, carrier))
-    conn.commit()
-    conn.close()
-
-def fetch_shipments_for_hub(hub_id):
-    conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT * FROM shipments
-        WHERE hub_id = ?
-        ORDER BY date DESC
-    """, conn, params=(hub_id,))
-    conn.close()
-    return df
-
-def fetch_all_shipments():
-    conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT * FROM shipments
-        ORDER BY date DESC
-    """, conn)
-    conn.close()
-    return df
-
-def reply_to_supply_request(request_id, reply_text, admin_username):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE supply_requests SET response = ?, admin = ? WHERE id = ?
-    """, (reply_text, admin_username, request_id))
-    conn.commit()
-    conn.close()
-
-def fetch_my_supply_requests(hub_id):
-    conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT * FROM supply_requests
-        WHERE hub_id = ?
-        ORDER BY timestamp DESC
-    """, conn, params=(hub_id,))
-    conn.close()
-    return df
-
-# --- NOTIFICATIONS HELPERS ---
+# Notifications
 def insert_notification(user_role, user_id, message):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO notifications (created, user_role, user_id, message) VALUES (?, ?, ?, ?)",
-        (datetime.now(), user_role, user_id, message),
-    )
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO notifications (created, user_role, user_id, message)
+        VALUES (?, ?, ?, ?)""", (datetime.now(), user_role, user_id, message))
     conn.commit()
     conn.close()
 
-def fetch_hub_manager_id(hub_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id FROM users WHERE hub_id=? AND role IN ('manager', 'user') AND active=1 LIMIT 1",
-        (hub_id,),
-    )
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else None
-
 def fetch_notifications_for_user(user_role, user_id):
-    if user_id is None:
+    if not user_id:
         return pd.DataFrame(columns=["created", "message"])
     conn = get_connection()
-    df = pd.read_sql_query(
-        "SELECT created, message FROM notifications WHERE user_role = ? AND user_id = ? ORDER BY created DESC",
-        conn,
-        params=(user_role, user_id),
-    )
+    df = pd.read_sql_query("""
+        SELECT created, message FROM notifications WHERE user_role=? AND user_id=? ORDER BY created DESC
+    """, conn, params=(user_role, user_id))
     conn.close()
     return df
 
@@ -336,15 +197,14 @@ def fetch_notifications_for_user(user_role, user_id):
 def fetch_all_users():
     conn = get_connection()
     users = pd.read_sql_query(
-        "SELECT id, username, email, role, hub_id, active FROM users ORDER BY id", conn
-    )
+        "SELECT id, username, email, role, hub_id, active FROM users ORDER BY id", conn)
     conn.close()
     return users
 
 def add_user(username, password, email, role, hub_id, active=1):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    c = conn.cursor()
+    c.execute("""
         INSERT INTO users (username, password, email, role, hub_id, active)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (username, password, email, role, hub_id, active))
@@ -353,8 +213,8 @@ def add_user(username, password, email, role, hub_id, active=1):
 
 def update_user(user_id, username, email, role, hub_id, active):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    c = conn.cursor()
+    c.execute("""
         UPDATE users SET username=?, email=?, role=?, hub_id=?, active=?
         WHERE id=?
     """, (username, email, role, hub_id, active, user_id))
@@ -363,19 +223,19 @@ def update_user(user_id, username, email, role, hub_id, active):
 
 def deactivate_user(user_id):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
+    c = conn.cursor()
+    c.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
     conn.commit()
     conn.close()
 
 def activate_user(user_id):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET active=1 WHERE id=?", (user_id,))
+    c = conn.cursor()
+    c.execute("UPDATE users SET active=1 WHERE id=?", (user_id,))
     conn.commit()
     conn.close()
 
-# --- TABS ---
+# ---- UI: User Management ----
 def render_user_management_panel():
     st.subheader("👤 User Management")
     users = fetch_all_users()
@@ -428,6 +288,7 @@ def render_user_management_panel():
                         st.success("User activated.")
                         st.rerun()
 
+# ---- UI: Hub Dashboard ----
 def render_hub_dashboard(hub_id, username):
     tabs = st.tabs([
         "Inventory", "Inventory Out Trends", "Supply Notes", "Shipments", "Add Inventory Transaction", "Notifications"
@@ -441,15 +302,16 @@ def render_hub_dashboard(hub_id, username):
             st.warning("⚠️ The following items are below 10 in stock. Contact HQ for restock:")
             st.dataframe(low_stock)
         today_orders = fetch_today_orders(hub_id)
-        st.success(f"✅ Orders Processed Today: {today_orders}")
+        if today_orders >= 10:
+            st.success(f"✅ Orders Processed Today: {today_orders}  \n🎉 <span style='color:gold;font-size:1.4em'><b>WOOHOO!</b></span>", unsafe_allow_html=True)
+        else:
+            st.success(f"✅ Orders Processed Today: {today_orders}")
     with tabs[1]:
         st.subheader("📈 Inventory OUT Trends")
         history_df = fetch_inventory_history(hub_id)
         if not history_df.empty:
             chart = alt.Chart(history_df).mark_line().encode(
-                x='date:T',
-                y='total_out:Q',
-                color='sku:N'
+                x='date:T', y='total_out:Q', color='sku:N'
             ).properties(title="Inventory OUT Trends")
             st.altair_chart(chart, use_container_width=True)
         else:
@@ -465,7 +327,13 @@ def render_hub_dashboard(hub_id, username):
                 st.rerun()
         reqs = fetch_my_supply_requests(hub_id)
         if not reqs.empty:
-            st.dataframe(reqs[["timestamp", "notes", "response", "admin"]])
+            for i, row in reqs.iterrows():
+                msg = f"**{row['timestamp']}**: {row['notes']}"
+                st.markdown(f":blue[Message]: {msg}")
+                if row['response']:
+                    st.markdown(f":green[HQ Reply]: {row['response']} _(by {row['admin']})_")
+        else:
+            st.info("No messages to HQ yet.")
     with tabs[3]:
         st.subheader("🚚 Shipments to My Hub")
         ship_df = fetch_shipments_for_hub(hub_id)
@@ -476,6 +344,9 @@ def render_hub_dashboard(hub_id, username):
     with tabs[4]:
         st.subheader("➕ Add Inventory Transaction")
         sku_data = fetch_skus_for_hub(hub_id)
+        if not sku_data:
+            st.info("No SKUs assigned yet.")
+            return
         sku_options = {f"{name} ({sku})": sku for name, sku, _ in sku_data}
         selected_label = st.selectbox("Select SKU", list(sku_options.keys()))
         selected_sku = sku_options[selected_label]
@@ -494,6 +365,7 @@ def render_hub_dashboard(hub_id, username):
         else:
             st.info("No notifications yet.")
 
+# ---- UI: Admin Dashboard ----
 def render_admin_dashboard(username):
     admin_tabs = st.tabs([
         "All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests", "All Shipments", "Assign/Remove SKUs", "User Management", "Notifications"
@@ -514,9 +386,11 @@ def render_admin_dashboard(username):
         st.subheader("📬 All Hub Messages/Supply Requests")
         reqs = fetch_all_supply_requests()
         if not reqs.empty:
-            st.dataframe(reqs[["id", "hub_id", "username", "notes", "timestamp", "response", "admin"]])
             for idx, row in reqs.iterrows():
-                if not row.get('response'):
+                st.markdown(f"---\n:blue[From {row['username']} (hub_id: {row['hub_id']})] **{row['timestamp']}**\n> {row['notes']}")
+                if row['response']:
+                    st.markdown(f":green[You replied]: {row['response']} _(by {row['admin']})_")
+                else:
                     with st.form(f"reply_form_{row['id']}"):
                         reply_text = st.text_area("Reply", key=f"reply_{row['id']}")
                         if st.form_submit_button("Send Reply"):
@@ -562,148 +436,7 @@ def render_admin_dashboard(username):
         else:
             st.info("No notifications yet.")
 
-def render_supplier_dashboard(username):
-    st.subheader("🚚 Supplier Dashboard")
-
-    if "shipment_products" not in st.session_state:
-        st.session_state.shipment_products = [{
-            "product": "",
-            "sku": "",
-            "barcode": "",
-            "amount": 1,
-            "other_product": "",
-            "other_sku": "",
-        }]
-
-    conn = get_connection()
-    products_df = pd.read_sql_query("SELECT name, sku, barcode FROM products ORDER BY name", conn)
-    hubs_df = pd.read_sql_query("SELECT id, name FROM hubs", conn)
-    conn.close()
-    product_choices = list(products_df["name"]) + ["Other"]
-    hub_map = dict(zip(hubs_df['name'], hubs_df['id']))
-
-    with st.form("shipment_form"):
-        tracking = st.text_input("Tracking Number")
-        carrier = st.selectbox("Carrier", ["USPS", "UPS", "FedEx", "DHL"])
-        selected_hub = st.selectbox("Select Hub to Ship To", list(hub_map.keys()))
-        shipment_products = st.session_state.shipment_products
-
-        st.markdown("#### Products in Shipment")
-        to_remove = []
-        for i, prod in enumerate(shipment_products):
-            cols = st.columns([3,2,2,2,2])
-            with cols[0]:
-                product_name = st.selectbox(
-                    f"Product {i+1}", product_choices, 
-                    index=(product_choices.index(prod["product"]) if prod["product"] in product_choices else 0), key=f"product_{i}"
-                )
-                prod["product"] = product_name
-            with cols[1]:
-                if product_name == "Other":
-                    prod["other_product"] = st.text_input(f"Other Product Name {i+1}", value=prod["other_product"], key=f"otherprod_{i}")
-                else:
-                    prod["other_product"] = ""
-            with cols[2]:
-                if product_name == "Other":
-                    prod["other_sku"] = st.text_input(f"Other SKU {i+1}", value=prod["other_sku"], key=f"othersku_{i}")
-                    prod["sku"] = prod["other_sku"]
-                else:
-                    this_row = products_df[products_df["name"] == product_name]
-                    prod["sku"] = this_row["sku"].iloc[0] if not this_row.empty else ""
-            with cols[3]:
-                if product_name != "Other":
-                    prod["barcode"] = this_row["barcode"].iloc[0] if not this_row.empty else ""
-                    st.text(f"{prod['barcode']}")
-                else:
-                    prod["barcode"] = ""
-                    st.text("-")
-            with cols[4]:
-                prod["amount"] = st.number_input(f"Qty {i+1}", min_value=1, step=1, value=prod["amount"], key=f"qty_{i}")
-                if i > 0:
-                    if st.button(f"Remove", key=f"remove_{i}"):
-                        to_remove.append(i)
-        if to_remove:
-            for idx in sorted(to_remove, reverse=True):
-                shipment_products.pop(idx)
-            st.session_state.shipment_products = shipment_products
-            st.experimental_rerun()
-        if st.button("Add Another Product"):
-            shipment_products.append({
-                "product": "",
-                "sku": "",
-                "barcode": "",
-                "amount": 1,
-                "other_product": "",
-                "other_sku": "",
-            })
-            st.session_state.shipment_products = shipment_products
-            st.experimental_rerun()
-        st.markdown("#### Bulk Add Products (CSV Upload)")
-        csv_file = st.file_uploader("CSV file (columns: product, sku, barcode, amount)", type=["csv"])
-        if csv_file:
-            csv_df = pd.read_csv(csv_file)
-            for _, row in csv_df.iterrows():
-                shipment_products.append({
-                    "product": row.get("product", ""),
-                    "sku": row.get("sku", ""),
-                    "barcode": row.get("barcode", ""),
-                    "amount": int(row.get("amount", 1)),
-                    "other_product": "" if row.get("product", "") in product_choices else row.get("product", ""),
-                    "other_sku": "" if row.get("sku", "") else "",
-                })
-            st.session_state.shipment_products = shipment_products
-            st.success("CSV products added to this shipment! Review below before submitting.")
-            st.experimental_rerun()
-        submitted = st.form_submit_button("Add Shipment")
-        if submitted:
-            errors = []
-            for prod in shipment_products:
-                name = prod["product"] if prod["product"] != "Other" else prod["other_product"]
-                sku = prod["sku"] or prod["other_sku"]
-                amt = prod["amount"]
-                if not name or not sku or amt <= 0:
-                    errors.append(f"Product row missing required fields.")
-            if not tracking:
-                errors.append("Tracking number required.")
-            if errors:
-                st.error("\n".join(errors))
-            else:
-                hub_id = hub_map[selected_hub]
-                for prod in shipment_products:
-                    name = prod["product"] if prod["product"] != "Other" else prod["other_product"]
-                    sku = prod["sku"] or prod["other_sku"]
-                    amt = prod["amount"]
-                    insert_shipment(username, tracking, hub_id, name, amt, carrier)
-                admin_role = 'admin'
-                admin_id = st.session_state.user['id'] if st.session_state.user['role'] == 'admin' else None
-                msg = f"New shipment from {username} (Tracking: {tracking}) for hub '{selected_hub}'."
-                if admin_id:
-                    insert_notification(admin_role, admin_id, msg)
-                hub_manager_id = fetch_hub_manager_id(hub_id)
-                if hub_manager_id:
-                    insert_notification('hub', hub_manager_id, f"Shipment from {username} is on the way. Tracking: {tracking}")
-                st.success("Shipment logged and notifications sent to HQ and hub!")
-                st.session_state.shipment_products = [{
-                    "product": "",
-                    "sku": "",
-                    "barcode": "",
-                    "amount": 1,
-                    "other_product": "",
-                    "other_sku": "",
-                }]
-                st.experimental_rerun()
-    st.subheader("My Shipments")
-    ships = fetch_all_shipments()
-    ships = ships[ships['supplier'] == username] if not ships.empty else pd.DataFrame()
-    if not ships.empty:
-        st.dataframe(ships)
-        st.download_button("Download My Shipments (CSV)", ships.to_csv(index=False), file_name="my_shipments.csv", mime="text/csv")
-    else:
-        st.info("No shipments found.")
-    st.markdown("---")
-    st.info("Need to ship to multiple hubs at once? Use the above form, then repeat for each hub.")
-
-# --- LOGIN FLOW ---
+# ---- LOGIN FLOW ----
 if 'user' not in st.session_state:
     st.session_state.user = None
 
@@ -733,7 +466,5 @@ else:
     user = st.session_state.user
     if user["role"] == "admin":
         render_admin_dashboard(user["username"])
-    elif user["role"] == "supplier":
-        render_supplier_dashboard(user["username"])
     else:
         render_hub_dashboard(user["hub_id"], user["username"])
