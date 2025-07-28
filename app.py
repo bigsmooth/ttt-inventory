@@ -219,14 +219,6 @@ def insert_notification(user_role, user_id, message):
     conn.commit()
     conn.close()
 
-def fetch_admin_id():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM users WHERE role='admin' AND active=1 LIMIT 1")
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else None
-
 def fetch_hub_manager_id(hub_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -481,11 +473,10 @@ def render_admin_dashboard(username):
     # Tab 6: User Management
     with admin_tabs[5]:
         render_user_management_panel()
-    # --- NOTIFICATIONS TAB FOR ADMIN ---
+    # --- NOTIFICATIONS TAB FOR ADMIN (HQ ADMIN Kevin only) ---
     with admin_tabs[6]:
         st.subheader("🔔 Notifications")
-        admin_id = fetch_admin_id()
-        notif_df = fetch_notifications_for_user('admin', admin_id) if admin_id else pd.DataFrame()
+        notif_df = fetch_notifications_for_user(st.session_state.user['role'], st.session_state.user['id'])
         if not notif_df.empty:
             st.dataframe(notif_df)
         else:
@@ -615,10 +606,12 @@ def render_supplier_dashboard(username):
                     amt = prod["amount"]
                     insert_shipment(username, tracking, hub_id, name, amt, carrier)
                 # --- NOTIFY HQ ADMIN & HUB MANAGER/USER ---
-                admin_id = fetch_admin_id()
+                # Instead of fetch_admin_id, use notifications for HQ admin (Kevin) user ID
+                admin_role = 'admin'
+                admin_id = st.session_state.user['id'] if st.session_state.user['role'] == 'admin' else None
                 msg = f"New shipment from {username} (Tracking: {tracking}) for hub '{selected_hub}'."
                 if admin_id:
-                    insert_notification('admin', admin_id, msg)
+                    insert_notification(admin_role, admin_id, msg)
                 hub_manager_id = fetch_hub_manager_id(hub_id)
                 if hub_manager_id:
                     insert_notification('hub', hub_manager_id, f"Shipment from {username} is on the way. Tracking: {tracking}")
