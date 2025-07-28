@@ -5,13 +5,6 @@ from datetime import datetime, timedelta
 import altair as alt
 import os
 
-# Try to import Google Auth, fallback if not available
-try:
-    from streamlit_oauth import st_oauth
-    GOOGLE_AUTH = True
-except ImportError:
-    GOOGLE_AUTH = False
-
 try:
     import streamlit_authenticator as stauth
     ST_AUTH = True
@@ -72,22 +65,11 @@ def get_connection():
         st.error(f"Database connection failed: {e}")
         return None
 
-# -- Auth: Google & fallback to username/password
-def google_login():
-    # This function uses streamlit-oauth (set up in GCP)
-    try:
-        token = st_oauth(
-            client_id="YOUR_GOOGLE_CLIENT_ID",
-            client_secret="YOUR_GOOGLE_CLIENT_SECRET",
-            redirect_uri=None,
-            provider="google"
-        )
-        if token:
-            user_email = token.get('userinfo', {}).get('email', None)
-            return user_email
-    except Exception as e:
-        st.warning("Google login failed or not set up.")
-    return None
+# ----------- LOGIN (simple only, Google login commented out) -----------
+
+# def google_login():
+#     # Google login is commented out
+#     pass
 
 def fallback_login():
     # Uses streamlit-authenticator for local password auth
@@ -105,16 +87,17 @@ def fallback_login():
     return None
 
 def login_flow():
-    if GOOGLE_AUTH:
-        st.markdown("## Sign in with Google")
-        user_email = google_login()
-        if user_email:
-            user = find_user_by_email(user_email)
-            if user is not None:
-                return user
-            st.error("No user found for this email.")
+    # Google login is commented out for now
+    # if GOOGLE_AUTH:
+    #     st.markdown("## Sign in with Google")
+    #     user_email = google_login()
+    #     if user_email:
+    #         user = find_user_by_email(user_email)
+    #         if user is not None:
+    #             return user
+    #         st.error("No user found for this email.")
     if ST_AUTH:
-        st.markdown("## Or use local account")
+        st.markdown("## Login with Username/Password")
         user = fallback_login()
         if user:
             user_data = get_user_by_username(user)
@@ -505,12 +488,10 @@ def render_user_management_panel():
 
 # --- Main App Flow ---
 if __name__ == "__main__":
-    # --- LOGO and Branding
     st.image(LOGO_URL, width=110)
     st.markdown("<h2 style='color:#c14a70;font-weight:800'>TTT Inventory Management</h2>", unsafe_allow_html=True)
     st.caption("Welcome to your real-time stock and shipment portal.")
 
-    # --- Auth
     if 'user' not in st.session_state or st.session_state.user is None:
         user_data = login_flow()
         if user_data:
@@ -518,14 +499,12 @@ if __name__ == "__main__":
         else:
             st.stop()
 
-    # --- Sidebar/logout
     user = st.session_state.user
     st.sidebar.success(f"Logged in as: {user['username']} ({user['role']})")
     if st.sidebar.button("Logout"):
         st.session_state.user = None
         st.rerun()
 
-    # --- Show role-based dashboards
     if user["role"] == "admin":
         render_admin_dashboard(user["username"], user["id"])
     else:
