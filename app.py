@@ -29,6 +29,7 @@ def create_tables():
     c.execute("""CREATE TABLE IF NOT EXISTS supply_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT, hub_id INTEGER, username TEXT, notes TEXT, timestamp DATETIME, response TEXT, admin TEXT
     )""")
+    
     c.execute("""CREATE TABLE IF NOT EXISTS shipments (
         id INTEGER PRIMARY KEY AUTOINCREMENT, date DATETIME, hub_id INTEGER, tracking TEXT, carrier TEXT, notes TEXT
     )""")
