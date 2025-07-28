@@ -154,122 +154,152 @@ def remove_sku_from_hub(sku, hub_id):
     conn.commit()
     conn.close()
 
-# ===== USER MANAGEMENT HELPERS =====
+# === USER MANAGEMENT FUNCTIONS ===
 def fetch_all_users():
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT id, username, email, role, hub_id, active FROM users ORDER BY id")
+    c.execute("""
+        SELECT id, username, full_name, email, role, hub_id, active
+        FROM users
+        ORDER BY id
+    """)
     users = c.fetchall()
     conn.close()
     return users
 
-def add_user(username, email, password, role, hub_id):
+def add_user(username, full_name, password, email, role, hub_id, active=1):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO users (username, email, password, role, hub_id, active) VALUES (?, ?, ?, ?, ?, 1)",
-              (username, email, password, role, hub_id if hub_id else None))
+    c.execute("""
+        INSERT INTO users (username, full_name, password, email, role, hub_id, active)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (username, full_name, password, email, role, hub_id, active))
     conn.commit()
     conn.close()
 
-def update_user(user_id, username, email, password, role, hub_id, active):
+def update_user_active(user_id, active):
     conn = get_connection()
     c = conn.cursor()
-    if password:
-        c.execute("UPDATE users SET username=?, email=?, password=?, role=?, hub_id=?, active=? WHERE id=?",
-                  (username, email, password, role, hub_id if hub_id else None, active, user_id))
-    else:
-        c.execute("UPDATE users SET username=?, email=?, role=?, hub_id=?, active=? WHERE id=?",
-                  (username, email, role, hub_id if hub_id else None, active, user_id))
+    c.execute("UPDATE users SET active=? WHERE id=?", (active, user_id))
     conn.commit()
     conn.close()
 
-def remove_user(user_id):
+def delete_user(user_id):
     conn = get_connection()
     c = conn.cursor()
     c.execute("DELETE FROM users WHERE id=?", (user_id,))
     conn.commit()
     conn.close()
 
-# ====== ADMIN USER MANAGEMENT TAB ======
+# --- TABS ---
+def render_hub_dashboard(hub_id, username):
+    tabs = st.tabs([
+        "Inventory", "Inventory Out Trends", "Supply Notes", "Add Inventory Transaction"
+    ])
+    with tabs[0]:
+        inventory_df = pd.DataFrame(fetch_inventory_for_hub(hub_id), columns=["Product", "SKU", "Barcode", "Inventory"])
+        st.subheader("📦 My Inventory")
+        st.dataframe(inventory_df)
+        low_stock = inventory_df[inventory_df["Inventory"] < 10]
+        if not low_stock.empty:
+            st.warning("⚠️ The following items are below 10 in stock. Contact HQ for restock:")
+            st.dataframe(low_stock)
+        today_orders = fetch_today_orders(hub_id)
+        st.success(f"✅ Orders Processed Today: {today_orders}")
+    with tabs[1]:
+        st.subheader("📈 Inventory OUT Trends")
+        history_df = fetch_inventory_history(hub_id)
+        if not history_df.empty:
+            chart = alt.Chart(history_df).mark_line().encode(
+                x='date:T',
+                y='total_out:Q',
+                color='sku:N'
+            ).properties(title="Inventory OUT Trends")
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("No OUT transactions yet.")
+    with tabs[2]:
+        st.subheader("📝 Supply Notes / Messages to HQ")
+        # Submit new note
+        with st.form("supply_request_form"):
+            note = st.text_area("Message or Supply Request to HQ")
+            submit_note = st.form_submit_button("Send to HQ")
+            if submit_note and note.strip():
+                insert_supply_request(hub_id, username, note.strip())
+                st.success("Sent to HQ.")
+                st.experimental_rerun()
+        # Show requests and any admin replies
+        reqs = fetch_all_supply_requests()
+        if not reqs.empty:
+            filtered_reqs = reqs[reqs["hub_id"] == hub_id]
+            st.dataframe(filtered_reqs[["timestamp", "notes"]])
+    with tabs[3]:
+        st.subheader("➕ Add Inventory Transaction")
+        sku_data = fetch_skus_for_hub(hub_id)
+        sku_options = {f"{name} ({sku})": sku for name, sku, _ in sku_data}
+        selected_label = st.selectbox("Select SKU", list(sku_options.keys()))
+        selected_sku = sku_options[selected_label]
+        action = st.radio("Action", ["IN", "OUT"], horizontal=True)
+        quantity = st.number_input("Quantity", min_value=1, step=1)
+        comment = st.text_input("Optional Comment")
+        if st.button("Submit Inventory Update"):
+            log_inventory(st.session_state.user["id"], selected_sku, action, quantity, hub_id, comment)
+            st.success(f"{action} of {quantity} for {selected_label} recorded.")
+            st.experimental_rerun()
+
 def render_user_management_panel():
-    st.subheader("👥 User Management")
+    st.subheader("👤 User Management (HQ Admin Only)")
+
+    # Show all users
+    users = fetch_all_users()
+    users_df = pd.DataFrame(users, columns=["ID", "Username", "Full Name", "Email", "Role", "Hub ID", "Active"])
+    st.dataframe(users_df)
+
     with st.expander("➕ Add New User"):
         with st.form("add_user_form"):
-            new_username = st.text_input("Username", key="new_username")
-            new_email = st.text_input("Email", key="new_email")
-            new_password = st.text_input("Password", type="password", key="new_password")
-            new_role = st.selectbox("Role", ["admin", "hub_manager", "supplier", "user"], key="new_role")
-            new_hub_id = st.number_input("Hub ID (0 for admin/supplier)", min_value=0, step=1, key="new_hub_id")
-            add_submit = st.form_submit_button("Add User")
-            if add_submit and new_username and new_email and new_password:
-                add_user(new_username, new_email, new_password, new_role, int(new_hub_id) if new_hub_id else None)
-                st.success("User added.")
+            username = st.text_input("Username")
+            full_name = st.text_input("Full Name")
+            password = st.text_input("Password", type="password")
+            email = st.text_input("Email")
+            role = st.selectbox("Role", ["admin", "manager", "user", "supplier"])
+            # Hub dropdown from hubs table
+            conn = get_connection()
+            hubs = pd.read_sql_query("SELECT id, name FROM hubs", conn)
+            conn.close()
+            hub_map = dict(zip(hubs['name'], hubs['id']))
+            hub_name = st.selectbox("Assign Hub", list(hub_map.keys()))
+            hub_id = hub_map[hub_name]
+            submit = st.form_submit_button("Add User")
+            if submit:
+                try:
+                    add_user(username, full_name, password, email, role, hub_id)
+                    st.success(f"User '{username}' added!")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    with st.expander("🛑 Activate / Deactivate / Delete User"):
+        user_ids = [user[0] for user in users]
+        selected_id = st.selectbox("Select User ID", user_ids)
+        selected_row = users_df[users_df["ID"] == selected_id].iloc[0] if selected_id else None
+        if selected_row is not None:
+            st.write(f"**Selected:** {selected_row['Username']} | Status: {'Active' if selected_row['Active'] else 'Inactive'}")
+            if st.button("Deactivate User"):
+                update_user_active(selected_id, 0)
+                st.success("User deactivated.")
                 st.experimental_rerun()
-
-    st.markdown("### 📝 Edit/Remove Existing Users")
-    users = fetch_all_users()
-    for u in users:
-        with st.expander(f"User #{u[0]}: {u[1]} ({u[3]}) [{ 'Active' if u[5] else 'Inactive' }]"):
-            with st.form(f"edit_user_{u[0]}"):
-                username = st.text_input("Username", value=u[1], key=f"username_{u[0]}")
-                email = st.text_input("Email", value=u[2], key=f"email_{u[0]}")
-                password = st.text_input("Password (leave blank to keep current)", type="password", key=f"pw_{u[0]}")
-                role = st.selectbox("Role", ["admin", "hub_manager", "supplier", "user"], index=["admin", "hub_manager", "supplier", "user"].index(u[3]), key=f"role_{u[0]}")
-                hub_id = st.number_input("Hub ID", min_value=0, value=u[4] if u[4] else 0, key=f"hubid_{u[0]}")
-                active = st.checkbox("Active", value=bool(u[5]), key=f"active_{u[0]}")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if st.form_submit_button("Update"):
-                        update_user(u[0], username, email, password, role, int(hub_id), 1 if active else 0)
-                        st.success("User updated.")
-                        st.experimental_rerun()
-                with col2:
-                    if st.form_submit_button("Remove"):
-                        remove_user(u[0])
-                        st.warning("User removed.")
-                        st.experimental_rerun()
-
-# --- DASHBOARD HELPERS ---
-def render_hub_dashboard(hub_id):
-    st.subheader("📊 Hub Dashboard")
-
-    st.markdown("### ➕ Add Inventory Transactions")
-    sku_data = fetch_skus_for_hub(hub_id)
-    sku_options = {f"{name} ({sku})": sku for name, sku, _ in sku_data}
-    selected_label = st.selectbox("Select SKU", list(sku_options.keys()))
-    selected_sku = sku_options[selected_label]
-    action = st.radio("Action", ["IN", "OUT"], horizontal=True)
-    quantity = st.number_input("Quantity", min_value=1, step=1)
-    comment = st.text_input("Optional Comment")
-
-    if st.button("Submit Inventory Update"):
-        log_inventory(st.session_state.user["id"], selected_sku, action, quantity, hub_id, comment)
-        st.success(f"{action} of {quantity} for {selected_label} recorded.")
-        st.rerun()
-
-    inventory_df = pd.DataFrame(fetch_inventory_for_hub(hub_id), columns=["Product", "SKU", "Barcode", "Inventory"])
-    st.dataframe(inventory_df)
-
-    low_stock = inventory_df[inventory_df["Inventory"] < 10]
-    if not low_stock.empty:
-        st.warning("⚠️ The following items are below 10 in stock. Contact HQ for restock:")
-        st.dataframe(low_stock)
-
-    history_df = fetch_inventory_history(hub_id)
-    if not history_df.empty:
-        chart = alt.Chart(history_df).mark_line().encode(
-            x='date:T',
-            y='total_out:Q',
-            color='sku:N'
-        ).properties(title="Inventory OUT Trends")
-        st.altair_chart(chart, use_container_width=True)
-
-    today_orders = fetch_today_orders(hub_id)
-    st.success(f"✅ Orders Processed Today: {today_orders}")
+            if st.button("Activate User"):
+                update_user_active(selected_id, 1)
+                st.success("User activated.")
+                st.experimental_rerun()
+            if st.button("Delete User"):
+                delete_user(selected_id)
+                st.success("User deleted.")
+                st.experimental_rerun()
 
 def render_admin_dashboard():
     admin_tabs = st.tabs([
-        "All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests", "All Shipments", "Assign/Remove SKUs", "User Management"
+        "All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests", "Assign/Remove SKUs", "User Management"
     ])
     # Tab 1: All Inventory
     with admin_tabs[0]:
@@ -289,14 +319,12 @@ def render_admin_dashboard():
     with admin_tabs[2]:
         st.subheader("📬 All Hub Messages/Supply Requests")
         reqs = fetch_all_supply_requests()
-        st.dataframe(reqs)
-    # Tab 4: Shipments
+        if not reqs.empty:
+            st.dataframe(reqs[["id", "hub_id", "username", "notes", "timestamp"]])
+        else:
+            st.info("No supply notes/requests found.")
+    # Tab 4: SKU Assignment
     with admin_tabs[3]:
-        st.subheader("🚚 All Shipments")
-        # (Your shipments tab code here)
-        st.info("Shipments feature coming soon.")
-    # Tab 5: SKU Assignment
-    with admin_tabs[4]:
         st.subheader("🧩 Assign or Remove SKUs to/from Hubs")
         all_hubs = pd.read_sql_query("SELECT id, name FROM hubs", get_connection())
         all_products = pd.read_sql_query("SELECT sku, name FROM products ORDER BY name", get_connection())
@@ -319,8 +347,8 @@ def render_admin_dashboard():
             hub_id = hub_map[selected_hub]
             current = fetch_skus_for_hub(hub_id)
             st.dataframe(pd.DataFrame(current, columns=["Product", "SKU", "Barcode"]))
-    # Tab 6: User Management
-    with admin_tabs[5]:
+    # Tab 5: User Management
+    with admin_tabs[4]:
         render_user_management_panel()
 
 # --- LOGIN FLOW ---
@@ -333,6 +361,7 @@ if st.session_state.user is None:
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login")
+
         if submitted:
             result = login(username, password)
             if result:
@@ -342,17 +371,16 @@ if st.session_state.user is None:
                     "hub_id": result[2],
                     "username": username
                 }
-                st.rerun()
+                st.experimental_rerun()
             else:
                 st.error("❌ Invalid username or password")
 else:
-    st.sidebar.success(f"Logged in as: {st.session_state.user['username']}")
+    st.sidebar.success(f"Logged in as: {st.session_state.user['username']} ({st.session_state.user['role']})")
     if st.sidebar.button("Logout"):
         st.session_state.clear()
-        st.rerun()
-
+        st.experimental_rerun()
     user = st.session_state.user
     if user["role"] == "admin":
         render_admin_dashboard()
     else:
-        render_hub_dashboard(user["hub_id"])
+        render_hub_dashboard(user["hub_id"], user["username"])
