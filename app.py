@@ -52,12 +52,15 @@ def deactivate_user(user_id):
 def activate_user(user_id):
     db("UPDATE users SET active=1 WHERE id=?", (user_id,))
 
+def hubs():
+    return db("SELECT id, name FROM hubs", df=True)
+
 # --- Admin/User panels ---
 def user_management():
     st.subheader("👤 User Management")
     df = users()
-    hubs = db("SELECT id, name FROM hubs", df=True)
-    hub_map = dict(zip(hubs.name, hubs.id)) if not hubs.empty else {}
+    hubs_df = hubs()
+    hub_map = dict(zip(hubs_df.name, hubs_df.id)) if not hubs_df.empty else {}
     # Add User
     with st.form("add_user_form"):
         c1, c2, c3 = st.columns(3)
@@ -104,14 +107,14 @@ def user_management():
 def admin_panel():
     st.title("🧦 HQ Admin Dashboard")
     st.write("You are logged in as HQ Admin.")
-    # Example: show all notifications for current user
+    # Notifications
     n = notifications("admin", st.session_state.u["id"])
     st.subheader("🔔 Notifications")
     if not n.empty:
         st.dataframe(n)
     else:
         st.info("No notifications yet.")
-    # User management tab
+    # User management
     user_management()
 
 # --- Simple login logic ---
@@ -139,5 +142,4 @@ else:
     if st.session_state.u["role"] == "admin":
         admin_panel()
     else:
-        st.write("Standard hub user panel here...") # Add hub/manager view as needed
-
+        st.write("Standard hub/manager/supplier dashboard goes here...")
