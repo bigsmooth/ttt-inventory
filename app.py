@@ -5,7 +5,6 @@ from datetime import datetime
 import altair as alt
 
 DB_FILE = "barcodes.db"
-
 st.set_page_config(page_title="TTT Inventory System", page_icon="🧦", layout="wide")
 st.image("https://i.imgur.com/Y7SgqZR.jpeg", width=150)
 
@@ -41,14 +40,6 @@ def log_inventory(user_id, sku, action, quantity, hub_id, comment):
     """, (timestamp, sku, action, quantity, hub_id, user_id, comment))
     conn.commit()
     conn.close()
-
-def is_sku_assigned_to_hub(hub_id, sku):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM hub_skus WHERE hub_id = ? AND sku = ?", (hub_id, sku))
-    result = cursor.fetchone()
-    conn.close()
-    return result is not None
 
 def fetch_skus_for_hub(hub_id):
     conn = get_connection()
@@ -110,15 +101,6 @@ def insert_supply_request(hub_id, username, notes):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS supply_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hub_id INTEGER,
-            username TEXT,
-            notes TEXT,
-            timestamp DATETIME
-        )
-    """)
-    cursor.execute("""
         INSERT INTO supply_requests (hub_id, username, notes, timestamp)
         VALUES (?, ?, ?, ?)
     """, (hub_id, username, notes, datetime.now()))
@@ -172,22 +154,103 @@ def remove_sku_from_hub(sku, hub_id):
     conn.commit()
     conn.close()
 
-# --- HUB DASHBOARD ---
-def render_hub_dashboard(hub_id, username):
-    tabs = st.tabs(["📦 My Inventory", "➕ Add Inventory Transaction", "📈 Inventory OUT Trends", "📝 Supply Notes/Requests"])
+def insert_shipment(supplier, tracking, hub_id, product, amount):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO shipments (date, supplier, tracking, hub_id, product, amount)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (datetime.now(), supplier, tracking, hub_id, product, amount))
+    conn.commit()
+    conn.close()
 
-    # --- Inventory Tab ---
+def fetch_shipments_for_hub(hub_id):
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT * FROM shipments
+        WHERE hub_id = ?
+        ORDER BY date DESC
+    """, conn, params=(hub_id,))
+    conn.close()
+    return df
+
+def fetch_all_shipments():
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT * FROM shipments
+        ORDER BY date DESC
+    """, conn)
+    conn.close()
+    return df
+
+def reply_to_supply_request(request_id, reply_text, admin_username):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE supply_requests SET response = ?, admin = ? WHERE id = ?
+    """, (reply_text, admin_username, request_id))
+    conn.commit()
+    conn.close()
+
+def fetch_my_supply_requests(hub_id):
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT * FROM supply_requests
+        WHERE hub_id = ?
+        ORDER BY timestamp DESC
+    """, conn, params=(hub_id,))
+    conn.close()
+    return df
+
+# --- TABS ---
+def render_hub_dashboard(hub_id, username):
+    tabs = st.tabs([
+        "Inventory", "Inventory Out Trends", "Supply Notes", "Shipments", "Add Inventory Transaction"
+    ])
     with tabs[0]:
         inventory_df = pd.DataFrame(fetch_inventory_for_hub(hub_id), columns=["Product", "SKU", "Barcode", "Inventory"])
-        st.dataframe(inventory_df, use_container_width=True)
-
+        st.subheader("📦 My Inventory")
+        st.dataframe(inventory_df)
         low_stock = inventory_df[inventory_df["Inventory"] < 10]
         if not low_stock.empty:
             st.warning("⚠️ The following items are below 10 in stock. Contact HQ for restock:")
-            st.dataframe(low_stock, use_container_width=True)
-
-    # --- Add Transaction Tab ---
+            st.dataframe(low_stock)
+        today_orders = fetch_today_orders(hub_id)
+        st.success(f"✅ Orders Processed Today: {today_orders}")
     with tabs[1]:
+        st.subheader("📈 Inventory OUT Trends")
+        history_df = fetch_inventory_history(hub_id)
+        if not history_df.empty:
+            chart = alt.Chart(history_df).mark_line().encode(
+                x='date:T',
+                y='total_out:Q',
+                color='sku:N'
+            ).properties(title="Inventory OUT Trends")
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("No OUT transactions yet.")
+    with tabs[2]:
+        st.subheader("📝 Supply Notes / Messages to HQ")
+        # Submit new note
+        with st.form("supply_request_form"):
+            note = st.text_area("Message or Supply Request to HQ")
+            submit_note = st.form_submit_button("Send to HQ")
+            if submit_note and note.strip():
+                insert_supply_request(hub_id, username, note.strip())
+                st.success("Sent to HQ.")
+                st.experimental_rerun()
+        # Show requests and any admin replies
+        reqs = fetch_my_supply_requests(hub_id)
+        if not reqs.empty:
+            st.dataframe(reqs[["timestamp", "notes", "response", "admin"]])
+    with tabs[3]:
+        st.subheader("🚚 Shipments to My Hub")
+        ship_df = fetch_shipments_for_hub(hub_id)
+        if not ship_df.empty:
+            st.dataframe(ship_df)
+        else:
+            st.info("No shipments yet.")
+    with tabs[4]:
         st.subheader("➕ Add Inventory Transaction")
         sku_data = fetch_skus_for_hub(hub_id)
         sku_options = {f"{name} ({sku})": sku for name, sku, _ in sku_data}
@@ -199,78 +262,57 @@ def render_hub_dashboard(hub_id, username):
         if st.button("Submit Inventory Update"):
             log_inventory(st.session_state.user["id"], selected_sku, action, quantity, hub_id, comment)
             st.success(f"{action} of {quantity} for {selected_label} recorded.")
-            st.rerun()
+            st.experimental_rerun()
 
-    # --- Inventory Out Trends Tab ---
-    with tabs[2]:
-        history_df = fetch_inventory_history(hub_id)
-        if not history_df.empty:
-            chart = alt.Chart(history_df).mark_line().encode(
-                x='date:T',
-                y='total_out:Q',
-                color='sku:N'
-            ).properties(title="Inventory OUT Trends")
-            st.altair_chart(chart, use_container_width=True)
-        today_orders = fetch_today_orders(hub_id)
-        st.success(f"✅ Orders Processed Today: {today_orders}")
-
-    # --- Supply Notes/Requests Tab ---
-    with tabs[3]:
-        st.subheader("📝 Send Note/Request to HQ")
-        note = st.text_area("Enter your note or supply request")
-        if st.button("Send Note/Request"):
-            insert_supply_request(hub_id, username, note)
-            st.success("Request sent to HQ!")
-        st.subheader("My Past Supply Notes/Requests")
-        df = fetch_all_supply_requests()
-        my_notes = df[df["hub_id"] == hub_id]
-        st.dataframe(my_notes, use_container_width=True)
-
-# --- ADMIN DASHBOARD ---
-def render_admin_dashboard():
-    tabs = st.tabs([
-        "📊 All Inventory",
-        "📋 All Orders/OUT+IN",
-        "📝 All Supply Notes/Requests",
-        "🧩 Assign/Remove SKUs"
+def render_admin_dashboard(username):
+    admin_tabs = st.tabs([
+        "All Inventory", "All Orders/OUT+IN", "All Supply Notes/Requests", "All Shipments", "Assign/Remove SKUs"
     ])
-
-    # --- Inventory Tab ---
-    with tabs[0]:
-        st.subheader("All Inventory Across Hubs")
-        st.dataframe(fetch_all_inventory(), use_container_width=True)
-        st.download_button(
-            "Export All Inventory as CSV",
-            fetch_all_inventory().to_csv(index=False).encode(),
-            "inventory_all_hubs.csv",
-            "text/csv"
-        )
-
-    # --- All Orders Tab ---
-    with tabs[1]:
+    # Tab 1: All Inventory
+    with admin_tabs[0]:
+        st.subheader("📊 All Inventory Across Hubs")
+        inv = fetch_all_inventory()
+        st.dataframe(inv)
+        if st.button("Export All Inventory as CSV"):
+            st.download_button("Download CSV", inv.to_csv(index=False), file_name="all_inventory.csv", mime="text/csv")
+    # Tab 2: All Logs
+    with admin_tabs[1]:
+        st.subheader("🧾 All Orders/IN+OUT Logs")
         conn = get_connection()
-        df = pd.read_sql_query("SELECT * FROM inventory_log ORDER BY timestamp DESC", conn)
-        st.dataframe(df, use_container_width=True)
+        logs_df = pd.read_sql_query("SELECT * FROM inventory_log ORDER BY timestamp DESC", conn)
+        st.dataframe(logs_df)
         conn.close()
-
-    # --- Supply Notes Tab ---
-    with tabs[2]:
-        st.subheader("All Hub Messages/Supply Requests")
-        df = fetch_all_supply_requests()
-        st.dataframe(df, use_container_width=True)
-
-    # --- Assign/Remove SKUs ---
-    with tabs[3]:
+    # Tab 3: All Supply Notes
+    with admin_tabs[2]:
+        st.subheader("📬 All Hub Messages/Supply Requests")
+        reqs = fetch_all_supply_requests()
+        if not reqs.empty:
+            st.dataframe(reqs[["id", "hub_id", "username", "notes", "timestamp", "response", "admin"]])
+            for idx, row in reqs.iterrows():
+                if not row['response']:
+                    with st.form(f"reply_form_{row['id']}"):
+                        reply_text = st.text_area("Reply", key=f"reply_{row['id']}")
+                        if st.form_submit_button("Send Reply"):
+                            reply_to_supply_request(row['id'], reply_text, username)
+                            st.success("Reply sent.")
+                            st.experimental_rerun()
+        else:
+            st.info("No supply notes/requests found.")
+    # Tab 4: Shipments
+    with admin_tabs[3]:
+        st.subheader("🚚 All Shipments")
+        ships = fetch_all_shipments()
+        st.dataframe(ships)
+    # Tab 5: SKU Assignment
+    with admin_tabs[4]:
         st.subheader("🧩 Assign or Remove SKUs to/from Hubs")
         all_hubs = pd.read_sql_query("SELECT id, name FROM hubs", get_connection())
         all_products = pd.read_sql_query("SELECT sku, name FROM products ORDER BY name", get_connection())
         hub_map = dict(zip(all_hubs['name'], all_hubs['id']))
         product_map = dict(zip(all_products['name'], all_products['sku']))
-
         selected_hub = st.selectbox("Select Hub", list(hub_map.keys()))
         selected_product = st.selectbox("Select Product", list(product_map.keys()))
         selected_sku = product_map[selected_product]
-
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✅ Assign SKU"):
@@ -280,12 +322,33 @@ def render_admin_dashboard():
             if st.button("❌ Remove SKU"):
                 remove_sku_from_hub(selected_sku, hub_map[selected_hub])
                 st.warning(f"{selected_product} removed from {selected_hub}")
-
         if selected_hub:
             st.markdown(f"### Current SKUs at {selected_hub}")
             hub_id = hub_map[selected_hub]
             current = fetch_skus_for_hub(hub_id)
-            st.dataframe(pd.DataFrame(current, columns=["Product", "SKU", "Barcode"]), use_container_width=True)
+            st.dataframe(pd.DataFrame(current, columns=["Product", "SKU", "Barcode"]))
+
+def render_supplier_dashboard(username):
+    st.subheader("🚚 Supplier Dashboard")
+    with st.form("shipment_form"):
+        tracking = st.text_input("Tracking Number")
+        conn = get_connection()
+        hubs_df = pd.read_sql_query("SELECT id, name FROM hubs", conn)
+        conn.close()
+        hub_map = dict(zip(hubs_df['name'], hubs_df['id']))
+        selected_hub = st.selectbox("Select Hub to Ship To", list(hub_map.keys()))
+        product = st.text_input("Product Name (must match SKU product name)")
+        amount = st.number_input("Amount", min_value=1, step=1)
+        submit_shipment = st.form_submit_button("Add Shipment")
+        if submit_shipment:
+            insert_shipment(username, tracking, hub_map[selected_hub], product, amount)
+            st.success("Shipment logged and sent to HQ and hub.")
+            st.experimental_rerun()
+    # Show all shipments logged by this supplier
+    ships = fetch_all_shipments()
+    ships = ships[ships['supplier'] == username] if not ships.empty else pd.DataFrame()
+    st.subheader("My Shipments")
+    st.dataframe(ships if not ships.empty else pd.DataFrame(columns=["date", "tracking", "hub_id", "product", "amount"]))
 
 # --- LOGIN FLOW ---
 if 'user' not in st.session_state:
@@ -297,7 +360,6 @@ if st.session_state.user is None:
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login")
-
         if submitted:
             result = login(username, password)
             if result:
@@ -307,17 +369,18 @@ if st.session_state.user is None:
                     "hub_id": result[2],
                     "username": username
                 }
-                st.rerun()
+                st.experimental_rerun()
             else:
                 st.error("❌ Invalid username or password")
 else:
     st.sidebar.success(f"Logged in as: {st.session_state.user['username']} ({st.session_state.user['role']})")
     if st.sidebar.button("Logout"):
         st.session_state.clear()
-        st.rerun()
-
+        st.experimental_rerun()
     user = st.session_state.user
     if user["role"] == "admin":
-        render_admin_dashboard()
+        render_admin_dashboard(user["username"])
+    elif user["role"] == "supplier":
+        render_supplier_dashboard(user["username"])
     else:
         render_hub_dashboard(user["hub_id"], user["username"])
