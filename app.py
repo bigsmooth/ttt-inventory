@@ -12,6 +12,35 @@ st.image("https://i.imgur.com/Y7SgqZR.jpeg", width=150)
 def get_connection():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
+    # --- Ensure all tables exist ---
+def ensure_tables():
+    conn = get_connection()
+    cursor = conn.cursor()
+    # Shipments table (for supplier dashboard)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shipments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date DATETIME,
+            supplier TEXT,
+            tracking TEXT,
+            hub_id INTEGER,
+            product TEXT,
+            amount INTEGER
+        )
+    """)
+    # Add 'response' and 'admin' fields to supply_requests if not exist
+    cursor.execute("PRAGMA table_info(supply_requests)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'response' not in columns:
+        cursor.execute("ALTER TABLE supply_requests ADD COLUMN response TEXT")
+    if 'admin' not in columns:
+        cursor.execute("ALTER TABLE supply_requests ADD COLUMN admin TEXT")
+    conn.commit()
+    conn.close()
+
+ensure_tables()
+
+
 def login(username, password):
     conn = get_connection()
     cursor = conn.cursor()
