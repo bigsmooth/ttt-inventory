@@ -11,6 +11,7 @@ st.set_page_config(page_title="TTT Inventory System", page_icon="🧦", layout="
 def create_tables():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # c.execute("DROP TABLE IF EXISTS shipments")  # <--- UNCOMMENT AND RUN ONCE ONLY TO RESET
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, password TEXT, email TEXT, role TEXT, hub_id INTEGER, active INTEGER DEFAULT 1
     )""")
@@ -29,7 +30,6 @@ def create_tables():
     c.execute("""CREATE TABLE IF NOT EXISTS supply_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT, hub_id INTEGER, username TEXT, notes TEXT, timestamp DATETIME, response TEXT, admin TEXT
     )""")
-    c.execute("DROP TABLE IF EXISTS shipments")
     c.execute("""CREATE TABLE IF NOT EXISTS shipments (
         id INTEGER PRIMARY KEY AUTOINCREMENT, date DATETIME, hub_id INTEGER, tracking TEXT, carrier TEXT, notes TEXT
     )""")
@@ -436,17 +436,34 @@ def render_admin_dashboard(username):
         st.subheader("➕ Add Shipment for Any Hub")
         hubs = fetch_all_hubs()
         hub_choices = dict(zip(hubs['name'], hubs['id']))
+
+        # Use session_state to clear form after submit
+        if 'shipment_hub' not in st.session_state:
+            st.session_state['shipment_hub'] = list(hub_choices.keys())[0]
+        if 'shipment_tracking' not in st.session_state:
+            st.session_state['shipment_tracking'] = ""
+        if 'shipment_carrier' not in st.session_state:
+            st.session_state['shipment_carrier'] = "USPS"
+        if 'shipment_notes' not in st.session_state:
+            st.session_state['shipment_notes'] = ""
+
         with st.form("add_shipment_form"):
-            hub_name = st.selectbox("Select Hub", list(hub_choices.keys()))
-            tracking = st.text_input("Tracking Number")
-            carrier = st.selectbox("Carrier", ["USPS", "UPS", "FedEx", "DHL", "Other"])
-            notes = st.text_area("Notes (optional)")
+            hub_name = st.selectbox("Select Hub", list(hub_choices.keys()), key="shipment_hub")
+            tracking = st.text_input("Tracking Number", key="shipment_tracking")
+            carrier = st.selectbox("Carrier", ["USPS", "UPS", "FedEx", "DHL", "Other"], key="shipment_carrier")
+            notes = st.text_area("Notes (optional)", key="shipment_notes")
             submitted = st.form_submit_button("Add Shipment")
             if submitted:
                 hub_id = hub_choices[hub_name]
                 insert_shipment(hub_id, tracking, carrier, notes)
                 st.success(f"Shipment with Tracking '{tracking}' added for {hub_name}.")
-                st.rerun()
+
+                # Clear the fields
+                st.session_state['shipment_hub'] = list(hub_choices.keys())[0]
+                st.session_state['shipment_tracking'] = ""
+                st.session_state['shipment_carrier'] = "USPS"
+                st.session_state['shipment_notes'] = ""
+                st.experimental_rerun()
     with admin_tabs[5]:
         render_user_management_panel()
     with admin_tabs[6]:
