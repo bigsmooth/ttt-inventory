@@ -267,7 +267,7 @@ def render_hub_dashboard(hub_id, username):
             if submit_note and note.strip():
                 insert_supply_request(hub_id, username, note.strip())
                 st.success("Sent to HQ.")
-                st.experimental_rerun()
+                st.rerun()
         # Show requests and any admin replies
         reqs = fetch_my_supply_requests(hub_id)
         if not reqs.empty:
@@ -291,7 +291,7 @@ def render_hub_dashboard(hub_id, username):
         if st.button("Submit Inventory Update"):
             log_inventory(st.session_state.user["id"], selected_sku, action, quantity, hub_id, comment)
             st.success(f"{action} of {quantity} for {selected_label} recorded.")
-            st.experimental_rerun()
+            st.rerun()
 
 def render_admin_dashboard(username):
     admin_tabs = st.tabs([
@@ -324,7 +324,7 @@ def render_admin_dashboard(username):
                         if st.form_submit_button("Send Reply"):
                             reply_to_supply_request(row['id'], reply_text, username)
                             st.success("Reply sent.")
-                            st.experimental_rerun()
+                            st.rerun()
         else:
             st.info("No supply notes/requests found.")
     # Tab 4: Shipments
@@ -372,7 +372,7 @@ def render_supplier_dashboard(username):
         if submit_shipment:
             insert_shipment(username, tracking, hub_map[selected_hub], product, amount)
             st.success("Shipment logged and sent to HQ and hub.")
-            st.experimental_rerun()
+            st.rerun()
     # Show all shipments logged by this supplier
     ships = fetch_all_shipments()
     ships = ships[ships['supplier'] == username] if not ships.empty else pd.DataFrame()
@@ -398,14 +398,14 @@ if st.session_state.user is None:
                     "hub_id": result[2],
                     "username": username
                 }
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("❌ Invalid username or password")
 else:
     st.sidebar.success(f"Logged in as: {st.session_state.user['username']} ({st.session_state.user['role']})")
     if st.sidebar.button("Logout"):
         st.session_state.clear()
-        st.experimental_rerun()
+        st.rerun()
     user = st.session_state.user
     if user["role"] == "admin":
         render_admin_dashboard(user["username"])
