@@ -58,6 +58,12 @@ def fetch_all_hubs():
     conn.close()
     return df
 
+def fetch_all_products():
+    conn = get_connection()
+    df = pd.read_sql_query("SELECT sku, name FROM products", conn)
+    conn.close()
+    return df
+
 def fetch_my_supply_requests(hub_id):
     conn = get_connection()
     df = pd.read_sql_query("SELECT * FROM supply_requests WHERE hub_id=? ORDER BY timestamp DESC", conn, params=(hub_id,))
@@ -128,6 +134,30 @@ def fetch_skus_for_hub(hub_id):
     rows = c.fetchall()
     conn.close()
     return rows
+
+def assign_sku_to_hub(sku, hub_id):
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO hub_skus (sku, hub_id) VALUES (?, ?)", (sku, hub_id))
+        conn.commit()
+    except Exception as e:
+        st.error(f"Assign failed: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+def remove_sku_from_hub(sku, hub_id):
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM hub_skus WHERE sku=? AND hub_id=?", (sku, hub_id))
+        conn.commit()
+    except Exception as e:
+        st.error(f"Remove failed: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 def log_inventory(user_id, sku, action, quantity, hub_id, comment):
     conn = get_connection()
@@ -316,6 +346,64 @@ def render_user_management_panel():
                         st.success("User activated.")
                         st.rerun()
 
+# --- Admin: Add/Remove SKU ---
+def render_admin_sku_panel():
+    st.subheader("🧩 Assign/Remove SKU from Hub")
+    hubs = fetch_all_hubs()
+    hub_map = dict(zip(hubs['name'], hubs['id']))
+    products = fetch_all_products()
+    product_map = dict(zip(products['name'], products['sku']))
+
+    selected_hub = st.selectbox("Select Hub", list(hub_map.keys()), key="admin_sku_hub")
+    selected_product = st.selectbox("Select Product", list(product_map.keys()), key="admin_sku_product")
+    selected_sku = product_map[selected_product]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ Assign SKU", key="assign_sku"):
+            assign_sku_to_hub(selected_sku, hub_map[selected_hub])
+            st.success(f"{selected_product} assigned to {selected_hub}")
+            st.rerun()
+    with col2:
+        if st.button("❌ Remove SKU", key="remove_sku"):
+            remove_sku_from_hub(selected_sku, hub_map[selected_hub])
+            st.warning(f"{selected_product} removed from {selected_hub}")
+            st.rerun()
+
+    st.markdown(f"### Current SKUs at {selected_hub}")
+    current = fetch_skus_for_hub(hub_map[selected_hub])
+    st.dataframe(pd.DataFrame(current, columns=["Product", "SKU", "Barcode"]))
+
+# --- Admin: Send Message ---
+def render_send_message_panel():
+    st.subheader("✉️ Send Message/Notification")
+    users_df = fetch_all_users()
+    hubs = fetch_all_hubs()
+    hub_choices = dict(zip(hubs['name'], hubs['id']))
+    role_choices = ["All", "user", "manager", "admin", "supplier"]
+    st.markdown("Send a notification to **all**, by role, or specific hub:")
+    with st.form("send_message_form"):
+        target_role = st.selectbox("Role", role_choices, index=0)
+        target_hub = st.selectbox("Hub (optional)", ["None"] + list(hub_choices.keys()))
+        message = st.text_area("Message")
+        submitted = st.form_submit_button("Send Message")
+        if submitted:
+            recipients = []
+            if target_role == "All":
+                recipients = users_df["id"].tolist()
+            else:
+                role_users = users_df[users_df["role"] == target_role]
+                recipients = role_users["id"].tolist()
+            if target_hub != "None":
+                hub_users = users_df[users_df["hub_id"] == hub_choices[target_hub]]
+                recipients = set(recipients) & set(hub_users["id"].tolist())
+            if not message.strip() or not recipients:
+                st.error("Message and recipients required.")
+            else:
+                for uid in recipients:
+                    insert_notification(target_role, uid, message)
+                st.success(f"Message sent to {len(recipients)} user(s).")
+
 # --- Hub Dashboard ---
 def render_hub_dashboard(hub_id, username):
     tabs = st.tabs([
@@ -389,7 +477,7 @@ def render_hub_dashboard(hub_id, username):
 # --- Admin Dashboard ---
 def render_admin_dashboard(username):
     admin_tabs = st.tabs([
-        "All Inventory", "Inventory Charts", "All Supply Requests", "User Management", "Notifications"
+        "All Inventory", "Inventory Charts", "All Supply Requests", "Send Message", "Add/Remove SKU", "User Management", "Notifications"
     ])
     with admin_tabs[0]:
         st.subheader("📊 All Inventory Across Hubs")
@@ -439,8 +527,12 @@ def render_admin_dashboard(username):
         else:
             st.info("No supply notes/requests found.")
     with admin_tabs[3]:
-        render_user_management_panel()
+        render_send_message_panel()
     with admin_tabs[4]:
+        render_admin_sku_panel()
+    with admin_tabs[5]:
+        render_user_management_panel()
+    with admin_tabs[6]:
         st.subheader("🔔 Notifications")
         notif_df = fetch_notifications_for_user(st.session_state.user['role'], st.session_state.user['id'])
         if not notif_df.empty:
